@@ -306,6 +306,39 @@ func (cl *Client) Diagnostics(w io.Writer) error {
 	err = fmt.Errorf(strings.Join(errs, "\n"))
 	return err
 }
+func (cl *Client) GetCache() (*credentials.CCache, error) {
+	if ok, err := cl.IsConfigured(); !ok {
+		return nil, err
+	}
+	if !cl.Credentials.HasPassword() {
+		return nil, krberror.New(krberror.KRBMsgError, "cannot login, no user credentials available")
+	}
+	ASReq, err := messages.NewASReqForTGT(cl.Credentials.Domain(), cl.Config, cl.Credentials.CName())
+	if err != nil {
+		return nil, krberror.Errorf(err, krberror.KRBMsgError, "error generating new AS_REQ")
+	}
+	ASRep, err := cl.ASExchange(cl.Credentials.Domain(), ASReq, 0)
+	if err != nil {
+		return nil, err
+	}
+	c := credentials.Credential{
+		Key:         ASRep.DecryptedEncPart.Key,
+		AuthTime:    ASRep.DecryptedEncPart.AuthTime,
+		EndTime:     ASRep.DecryptedEncPart.EndTime,
+		RenewTill:   ASRep.DecryptedEncPart.RenewTill,
+		TicketFlags: ASRep.DecryptedEncPart.Flags,
+		Addresses:   ASRep.DecryptedEncPart.CAddr,
+	}
+	c.Client.PrincipalName = ASRep.CName
+	c.Client.Realm = ASRep.CRealm
+	c.Server.PrincipalName = ASRep.DecryptedEncPart.SName
+	c.Server.Realm = ASRep.DecryptedEncPart.SRealm
+	c.Ticket, _ = ASRep.Ticket.Marshal()
+	cc := credentials.NewV4CCache()
+	cc.AddCredential(&c)
+	cc.SetDefaultPrincipal(c.Client)
+	return cc, nil
+}
 
 // Print writes the details of the client to the io.Writer provided.
 func (cl *Client) Print(w io.Writer) {
